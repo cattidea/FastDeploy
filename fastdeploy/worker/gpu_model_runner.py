@@ -117,6 +117,7 @@ class GPUModelRunner(ModelRunnerBase):
         self.graph_opt_level = self.graph_opt_config.graph_opt_level
         self.use_cudagraph = self.graph_opt_config.use_cudagraph
         self.cudagraph_capture_sizes = list(reversed(self.graph_opt_config.cudagraph_capture_sizes))
+        self.sot_warmup_sizes = self.graph_opt_config.sot_warmup_sizes
 
         # Initialize share inputs
         self._init_share_inputs(self.parallel_config.max_num_seqs)
@@ -1016,8 +1017,8 @@ class GPUModelRunner(ModelRunnerBase):
     @sot_warmup_guard(True)
     def sot_warmup(self) -> None:
         start_time = time.perf_counter()
-        expected_decode_len = 64
-        for batch_size in [9, 7, 5, 3, 1]:
+        expected_decode_len = 33
+        for batch_size in self.sot_warmup_sizes:
             self._dummy_run(
                 num_tokens=self.parallel_config.max_num_batched_tokens,
                 batch_size=batch_size,
