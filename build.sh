@@ -66,7 +66,7 @@ function python_version_check() {
 function init() {
     echo -e "${BLUE}[init]${NONE} removing building directory..."
     rm -rf $BUILD_DIR $EGG_DIR $PRE_WHEEL_DIR
-    ${python} -m pip install setuptools_scm
+    uv pip install setuptools_scm
     echo -e "${BLUE}[init]${NONE} ${GREEN}init success\n"
 }
 
@@ -339,9 +339,9 @@ function version_info() {
 
 function cleanup() {
   rm -rf $BUILD_DIR $EGG_DIR
-  if [ `${python} -m pip list | grep fastdeploy | wc -l` -gt 0  ]; then
+  if [ `uv pip list | grep fastdeploy | wc -l` -gt 0  ]; then
     echo -e "${BLUE}[init]${NONE} uninstalling fastdeploy..."
-    ${python} -m pip uninstall -y fastdeploy-${DEVICE_TYPE}
+    uv pip uninstall fastdeploy-${DEVICE_TYPE}
   fi
 
   rm -rf $OPS_SRC_DIR/$BUILD_DIR $OPS_SRC_DIR/$EGG_DIR
@@ -355,7 +355,7 @@ function abort() {
   cur_dir=`basename "$pwd"`
 
   rm -rf $BUILD_DIR $EGG_DIR
-  ${python} -m pip uninstall -y fastdeploy-${DEVICE_TYPE}
+  uv pip uninstall fastdeploy-${DEVICE_TYPE}
 
   rm -rf $OPS_SRC_DIR/$BUILD_DIR $OPS_SRC_DIR/$EGG_DIR
 }
@@ -376,7 +376,7 @@ if [ "$BUILD_WHEEL" -eq 1 ]; then
       echo -e "${BLUE}[MODE]${NONE} Building wheel package from installed files..."
       build_and_install
       echo -e "${BLUE}[MODE]${NONE} Installing newly built FastDeploy wheel..."
-      ${python} -m pip install ./dist/fastdeploy*.whl
+      uv pip install ./dist/fastdeploy*.whl
       # get Paddle version
       PADDLE_VERSION=`${python} -c "import paddle; print(paddle.version.full_version)"`
       PADDLE_COMMIT=`${python} -c "import paddle; print(paddle.version.commit)"`
@@ -426,7 +426,7 @@ if [ "$BUILD_WHEEL" -eq 1 ]; then
   echo -e "${GREEN}wheel saved under${NONE} ${RED}${BOLD}./dist${NONE}"
 
   # install wheel
-  ${python} -m pip install ./dist/fastdeploy*.whl
+  uv pip install ./dist/fastdeploy*.whl
   echo -e "${GREEN}wheel install success${NONE}\n"
 
   trap : 0

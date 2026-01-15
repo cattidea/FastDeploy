@@ -913,10 +913,29 @@ class GraphOptimizationConfig:
         Now don't support capture both decode-only and prefill-only"""
         self.full_cuda_graph: bool = True
 
+        self.cudagraph_prefill_and_decode_capture_sizes: Optional[list[int]] = [
+            1,
+            2,
+            4,
+            8,
+            16,
+            32,
+            64,
+            128,
+            256,
+            512,
+            1024,
+            2048,
+            4096,
+            8192,
+        ]
+
         """ Maximum CUDA Graph capture size """
         self.max_capture_size: int = None
-        """ Record maps mapped from real shape to captured size to reduce runtime overhead """
+        """ Record maps mapped from real shape to captured size to reduce runtime overhead (for decode stage) """
         self.real_shape_to_captured_size: dict[int, int] = None
+        """ Record maps mapped from real num_tokens to captured size for prefill stage """
+        self.real_shape_to_captured_size_for_prefill: dict[int, int] = None
         """ Whether to use shared memory pool for multi capture_size """
         self.use_unique_memory_pool: bool = True
         """ Whether to use cudagraph for draft model."""
@@ -959,6 +978,30 @@ class GraphOptimizationConfig:
                 else:
                     self.real_shape_to_captured_size[bs] = end
         self.real_shape_to_captured_size[self.max_capture_size] = self.max_capture_size
+
+    def init_with_cudagrpah_size_for_prefill(
+        self, max_num_batched_tokens: int = 0, cudagraph_switch_threshold: int = 2048
+    ) -> None:
+
+        # effective_max = min(max_num_batched_tokens, cudagraph_switch_threshold)
+        prefill_capture_sizes = [
+            size
+            for size in self.cudagraph_prefill_and_decode_capture_sizes  # if size <= effective_max # 注意这里要和后面的 size 对齐！
+        ]
+        assert prefill_capture_sizes
+
+        prefill_capture_sizes = list(set(prefill_capture_sizes))
+        prefill_capture_sizes.sort(reverse=True)
+        self.max_prefill_capture_size = prefill_capture_sizes[0] if prefill_capture_sizes else 0
+
+        self.real_shape_to_captured_size_for_prefill = {}
+        for end, start in zip(prefill_capture_sizes, prefill_capture_sizes[1:] + [0]):
+            for num_tokens in range(start, end):
+                if num_tokens == start:
+                    self.real_shape_to_captured_size_for_prefill[num_tokens] = start
+                else:
+                    self.real_shape_to_captured_size_for_prefill[num_tokens] = end
+        self.real_shape_to_captured_size_for_prefill[self.max_prefill_capture_size] = self.max_prefill_capture_size
 
     def _set_cudagraph_sizes(self, max_capture_size: int = 0, dec_token_per_query_per_step: int = 1):
         """
@@ -1653,6 +1696,9 @@ class FDConfig:
                 max_capture_size=max_capture_shape, dec_token_per_query_per_step=dec_token_per_query_per_step
             )
         self.graph_opt_config.init_with_cudagrpah_size(max_capture_size=max_capture_shape)
+        self.graph_opt_config.init_with_cudagrpah_size_for_prefill(
+            max_num_batched_tokens=self.scheduler_config.max_num_batched_tokens,
+        )
 
         self.tokenizer = tokenizer
         self.ips = ips

@@ -112,7 +112,8 @@ class GraphOptBackend:
         self._debug_count_cudagraph_replay = 0
         self._debug_count_total_step = 0
 
-        if self.fd_config.graph_opt_config.graph_opt_level > 0:
+        self.run_dy2st = self.fd_config.graph_opt_config.graph_opt_level > 0
+        if self.run_dy2st:
             # 1. Prepare cuda graph input buffers (contain output of subgraphs)
 
             # 2. Convert dynamic graph to static graph
@@ -126,8 +127,8 @@ class GraphOptBackend:
             ).__get__(self.runnable.__self__)
 
         self.cudagraph_switch_threshold = (
-            1024 if self.fd_config.graph_opt_config.graph_opt_level > 0 else self.max_captre_size
-        )
+            8192 if self.run_dy2st else self.max_captre_size
+        )  # 注意这个数字要和 config 中的一致
 
     def __call__(self, **kwargs):
         if not self.fd_config.graph_opt_config.use_cudagraph:
@@ -142,15 +143,29 @@ class GraphOptBackend:
         if real_shape > 0:
             # only count the actual load.
             self._debug_count_total_step += 1
-
-        if (not kwargs["forward_meta"].step_use_cudagraph) or (real_shape > self.cudagraph_switch_threshold):
-            return self.dy_runnable(**kwargs)
-        else:
-            self._debug_count_cudagraph_replay += 1
-            logger.debug(
-                f"[CUDA GRAPH][ID:{id(self.cudagraph_piecewise_backend)}] Total step count: {self._debug_count_total_step}, CUDAGraph replay count: {self._debug_count_cudagraph_replay}"
+        # is_prefill = True
+        use_dynamic_graph = (
+            ((not kwargs["forward_meta"].step_use_cudagraph) and (not self.run_dy2st))
+            or (real_shape > self.cudagraph_switch_threshold)
+            # or (is_prefill)
+        )
+        if use_dynamic_graph:
+            print(
+                f"{kwargs['forward_meta'].step_use_cudagraph=}",
+                f"{self.run_dy2st=}",
+                f"{real_shape=}",
+                f"{self.cudagraph_switch_threshold=}",
+                sep=" ",
             )
-            return self.cudagraph_piecewise_backend.__call__(**kwargs)
+            print("[GRAPH_OPT_BACKEND] Using DYNAMIC graph")
+            return self.dy_runnable(**kwargs)
+
+        print("[GRAPH_OPT_BACKEND] Using CUDAGRAPH/STATIC graph")
+        self._debug_count_cudagraph_replay += 1
+        logger.debug(
+            f"[CUDA GRAPH][ID:{id(self.cudagraph_piecewise_backend)}] Total step count: {self._debug_count_total_step}, CUDAGraph replay count: {self._debug_count_cudagraph_replay}"
+        )
+        return self.cudagraph_piecewise_backend.__call__(**kwargs)
 
     def clear_cudagraph_piecewise_backend(self):
         """ """

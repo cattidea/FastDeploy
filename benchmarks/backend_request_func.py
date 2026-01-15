@@ -185,7 +185,8 @@ async def async_request_eb_openai_chat_completions(
                 "include_usage": True,
                 "continuous_usage_stats": True,
             },
-            "max_tokens": request_func_input.output_len,
+            # "max_tokens": request_func_input.output_len,
+            "max_tokens": 2,
             "collect_metrics": request_func_input.pd_metrics,
         }
         if request_func_input.response_format:
@@ -196,7 +197,8 @@ async def async_request_eb_openai_chat_completions(
 
         # 随机输入开关
         if request_func_input.random_flag:
-            payload["max_tokens"] = request_func_input.output_len
+            # payload["max_tokens"] = request_func_input.output_len
+            payload["max_tokens"] = 2
             metadata = payload.get("metadata", {})
             metadata["min_tokens"] = request_func_input.output_len
             payload["metadata"] = metadata
@@ -534,7 +536,8 @@ async def async_request_trt_llm(
             "text_input": request_func_input.prompt,
             "temperature": 0.0,
             "top_p": 1.0,
-            "max_tokens": request_func_input.output_len,
+            # "max_tokens": request_func_input.output_len,
+            "max_tokens": 2,
             "stream": True,
         }
         if request_func_input.ignore_eos:
@@ -594,7 +597,8 @@ async def async_request_deepspeed_mii(
 
         payload = {
             "prompt": request_func_input.prompt,
-            "max_tokens": request_func_input.output_len,
+            # "max_tokens": request_func_input.output_len,
+            "max_tokens": 2,
             "temperature": 0.01,  # deepspeed-mii does not accept 0.0 temp.
             "top_p": 1.0,
         }
@@ -648,7 +652,8 @@ async def async_request_openai_completions(
             "model": (request_func_input.model_name if request_func_input.model_name else request_func_input.model),
             "prompt": request_func_input.prompt,
             # "temperature": 0.0,
-            "max_tokens": request_func_input.output_len,
+            # "max_tokens": request_func_input.output_len,
+            "max_tokens": 2,
             "logprobs": request_func_input.logprobs,
             "stream": True,
             # "stream_options": {

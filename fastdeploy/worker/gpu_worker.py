@@ -212,7 +212,10 @@ class GpuWorker(WorkerBase):
         if self.fd_config.graph_opt_config.graph_opt_level >= 1:
             self.model_runner.vision_encoder_compile()
         # Trigger cuda graph capture
-        self.model_runner.capture_model()
+        if self.fd_config.graph_opt_config.graph_opt_level >= 1:
+            self.model_runner.capture_model_prefill_and_decode()
+        else:
+            self.model_runner.capture_model()
 
     def check_health(self) -> bool:
         """ """

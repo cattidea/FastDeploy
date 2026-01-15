@@ -236,6 +236,8 @@ class GPUModelRunner(ModelRunnerBase):
             self.async_output_copy_thread.start()
 
         self.enable_entropy = self.model_config.enable_entropy
+        self.start = -1
+        self.ii = 0
 
     def _async_output_busy_loop(self):
         """Entrypoint for the thread which handles outputs asynchronously."""
@@ -250,13 +252,13 @@ class GPUModelRunner(ModelRunnerBase):
         """
         check whether prefill stage exist
         """
-        return np.any(self.share_inputs["seq_lens_encoder"].numpy() > 0)
+        return (self.share_inputs["seq_lens_encoder"] > 0).any()
 
     def exist_decode(self):
         """
         check whether decode stage exist
         """
-        return np.any(self.share_inputs["seq_lens_decoder"].numpy() > 0)
+        return (self.share_inputs["seq_lens_decoder"] > 0).any()
 
     def only_prefill(self):
         """
@@ -366,9 +368,9 @@ class GPUModelRunner(ModelRunnerBase):
         """
         init logits processor for guided decoding
         """
-        assert self.guided_backend is not None, (
-            "guided_backend is None, use " "--guided-decoding-backend to specify the backend at server startup."
-        )
+        assert (
+            self.guided_backend is not None
+        ), "guided_backend is None, use --guided-decoding-backend to specify the backend at server startup."
 
         if request.guided_json is not None:
             schemata_key = ("json", request.guided_json)
@@ -1496,6 +1498,8 @@ class GPUModelRunner(ModelRunnerBase):
             logits_processors=self.share_inputs["logits_processors"],
             share_inputs=self.share_inputs,
         )
+        self.share_inputs["exist_prefill"] = self.exist_prefill()
+        self.share_inputs["exist_decode"] = self.exist_decode()
 
     def load_model(self) -> None:
         """load or download model"""
@@ -2005,11 +2009,17 @@ class GPUModelRunner(ModelRunnerBase):
 
         while True:
             # 1. Initialize forward meta and attention meta data
+            if self.forward_meta is not None:
+                print("[BEFORE] in capture ids_remove_padding.shape:", self.forward_meta.ids_remove_padding.shape)
             self._prepare_inputs(is_dummy_or_profile_run=True)
+            print("[AFTER] in capture ids_remove_padding.shape:", self.forward_meta.ids_remove_padding.shape)
 
             # 2. Padding inputs for cuda graph
             self.forward_meta.step_use_cudagraph = in_capturing and self.forward_meta.step_use_cudagraph
             self.padding_cudagraph_inputs()
+
+            if in_capturing:
+                print("in capture ids_remove_padding.shape:", self.forward_meta.ids_remove_padding.shape)
 
             # 3. Run model
             if self.enable_mm:
@@ -2055,6 +2065,9 @@ class GPUModelRunner(ModelRunnerBase):
             )
             if int((self.share_inputs["seq_lens_this_time"] > 0).sum()) == 0:
                 break
+
+            # if capture_prefill:
+            #     break
 
         if self.fd_config.routing_replay_config.enable_routing_replay:
             self.routing_replay_manager.clear_routing_table()
@@ -2199,6 +2212,30 @@ class GPUModelRunner(ModelRunnerBase):
         time_after_capture = time.perf_counter()
         logger.info(f"Cuda Graph capturing took {time_after_capture - time_before_capture} seconds")
 
+    @sot_warmup_guard(True)
+    def capture_model_prefill(self) -> None:
+        assert self.use_cudagraph
+        time_before_capture = time.perf_counter()
+        expected_decode_len = 1
+        capture_sizes = self.fd_config.graph_opt_config.cudagraph_prefill_and_decode_capture_sizes
+        for size in sorted(capture_sizes, reverse=True):
+            print(f"Batch Size: {size}")
+            self._dummy_run(
+                num_tokens=size,
+                batch_size=1,
+                in_capturing=True,
+                expected_decode_len=expected_decode_len,
+                capture_prefill=True,
+            )
+            logger.info(f"Warm up the model (Prefill) with the batch size:{size}, num tokens:{expected_decode_len}")
+
+        time_after_capture = time.perf_counter()
+        logger.info(f"Cuda Graph capturing (Prefill) took {time_after_capture - time_before_capture} seconds")
+
+    def capture_model_prefill_and_decode(self) -> None:
+        self.capture_model()
+        self.capture_model_prefill()
+
     def vision_encoder_compile(self):
         if self.graph_opt_config.graph_opt_level == 0:
             return
@@ -2311,6 +2348,20 @@ class GPUModelRunner(ModelRunnerBase):
         # 2. Padding inputs for cuda graph
         self.padding_cudagraph_inputs()
 
+        # PD = "P" if self.forward_meta.max_len_tensor_cpu[1] > 0 else ""
+        # PD += "D" if self.forward_meta.max_len_tensor_cpu[2] > 0 else ""
+        # print(PD, self.ii)
+        print("IS_PREFILL", self.share_inputs["exist_prefill"], "IS_DECODE", self.share_inputs["exist_decode"])
+
+        self.ii += 1
+        print(f"{self.ii=}")
+
+        # if self.ii > self.start:
+        #     core.nvprof_start()
+        #     # self.start = self.ii - 1
+
+        # core.nvprof_nvtx_push(f"{self.ii}")
+
         # 3. Execute model
         if self.enable_mm:
             model_output = self.model(
@@ -2324,6 +2375,12 @@ class GPUModelRunner(ModelRunnerBase):
                 self.forward_meta,
             )
 
+        # if self.ii == self.start + 20:
+        #     core.nvprof_nvtx_pop()
+        #     core.nvprof_stop()
+
+        # core.nvprof_nvtx_pop()
+
         # NOTE(wufeisheng): If `not_need_stop`` is False, it means the current worker is in an idle state.
         # This logic is not used in TP (Tensor Parallelism) mode. However, in EP (Expert Parallelism) mode,
         # Then there is data on other runner, the current runner is required to execute part of the model.
@@ -2335,6 +2392,17 @@ class GPUModelRunner(ModelRunnerBase):
             model_output = model_output[: self.real_token_num]
 
         prompt_logprobs_list = self._get_prompt_logprobs_list(model_output)
+
+        seq_lens_this_time = self.share_inputs["seq_lens_this_time"].flatten().numpy().tolist()
+        seq_lens_encoder = self.share_inputs["seq_lens_encoder"].flatten().numpy().tolist()
+        seq_lens_decoder = self.share_inputs["seq_lens_decoder"].flatten().numpy().tolist()
+
+        print(
+            f"*uxiaojian** {seq_lens_this_time=}\n",
+            f"*uxiaojian** {seq_lens_encoder=}\n",
+            f"*uxiaojian** {seq_lens_decoder=}\n",
+            sep="",
+        )
 
         if self.is_pooling_model:
             pooler_output = self._pool(model_output, num_running_requests)
@@ -2496,6 +2564,26 @@ class GPUModelRunner(ModelRunnerBase):
                 skip_save_output = True
             else:
                 skip_save_output = False
+
+            # 1. 打印当前 Batch 里有哪些请求
+            active_indices = []
+            for i in range(num_running_requests):
+                # seq_lens_this_time > 0 意味着这个 slot 有任务在跑
+                if self.share_inputs["seq_lens_this_time"][i] > 0:
+                    active_indices.append(i)
+
+            # 2. 打印关键身份信息
+            for idx in active_indices:
+                req_id = self.share_inputs["req_ids"][idx]  # 如果你有这个映射
+                print(f"Slot {idx}: ReqId={req_id}")
+                is_prefill = self.share_inputs["step_idx"][idx] == 0
+                seq_len = self.share_inputs["seq_lens_this_time"][idx]
+
+                # 打印生成的 Token (从 sampler_output 拿，或者 next_tokens)
+                # 注意：如果是 Prefill，next_tokens 是刚生成的第一个 token
+                gen_token = self.share_inputs["next_tokens"][idx].item()
+
+                print(f"  Slot {idx}: Type={'P' if is_prefill else 'D'}, Len={seq_len}, GenToken={gen_token}")
 
             post_process(
                 sampler_or_pooler_output=sampler_output,
@@ -2770,7 +2858,10 @@ class GPUModelRunner(ModelRunnerBase):
         self.initialize_kv_cache()
         # Recapture CUDAGraph
         if self.use_cudagraph:
-            self.capture_model()
+            if self.graph_opt_config.graph_opt_level >= 1:
+                self.capture_model_prefill_and_decode()
+            else:
+                self.capture_model()
         # Send single
         self.dynamic_weight_manager.finalize_update(pid)
 
